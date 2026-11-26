@@ -1,0 +1,5 @@
+.pio/
+managed_components/
+sdkconfig.esp32s3zero
+sdkconfig.old
+.remember/

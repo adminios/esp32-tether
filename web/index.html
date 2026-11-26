@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Fi Adapter</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1d1f23;--muted:#6b7280;--acc:#2563eb;--ok:#16a34a;--err:#dc2626;--line:#e5e7eb}
+@media (prefers-color-scheme:dark){:root{--bg:#111316;--card:#1b1e23;--fg:#e8eaed;--muted:#9aa0a6;--acc:#60a5fa;--ok:#4ade80;--err:#f87171;--line:#2c3036}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,Roboto,sans-serif}
+main{max-width:480px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:8px 0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.row{display:flex;justify-content:space-between;gap:8px;margin:4px 0}
+.muted{color:var(--muted);font-size:14px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:var(--muted)}
+.dot.online{background:var(--ok)}.dot.connecting{background:#eab308}.dot.failed{background:var(--err)}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;justify-content:space-between;align-items:center;padding:12px 4px;border-bottom:1px solid var(--line);cursor:pointer}
+li:last-child{border-bottom:0}
+li.sel{color:var(--acc);font-weight:600}
+label{display:block;font-size:14px;color:var(--muted);margin:12px 0 4px}
+input{width:100%;padding:12px;font-size:16px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+button{width:100%;padding:12px;margin-top:16px;font-size:16px;border:0;border-radius:8px;background:var(--acc);color:#fff;font-weight:600}
+button.secondary{background:transparent;color:var(--acc);border:1px solid var(--line)}
+button.danger{background:transparent;color:var(--err);border:1px solid var(--line)}
+button:disabled{opacity:.5}
+.msg{margin-top:12px;font-size:14px}.msg.err{color:var(--err)}.msg.ok{color:var(--ok)}
+.hidden{display:none}
+.bars{font-family:monospace;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <h1>ESP32 Wi-Fi Adapter</h1>
+
+  <section class="card" id="status">
+    <div class="row"><strong><span class="dot" id="dot"></span><span id="stText">Loading…</span></strong></div>
+    <div class="row muted hidden" id="stDetail"></div>
+    <div class="msg ok hidden" id="doneMsg">Connected. The phone reconnects to the adapter in a few seconds, then you can browse the internet. You can close this page.</div>
+    <button class="danger hidden" id="forgetBtn">Forget this Wi-Fi</button>
+  </section>
+
+  <section class="card">
+    <div class="row"><strong>Choose a Wi-Fi network</strong></div>
+    <ul id="list"><li class="muted">Scanning…</li></ul>
+    <button class="secondary" id="scanBtn">Scan again</button>
+  </section>
+
+  <section class="card">
+    <form id="form" autocomplete="off">
+      <label for="ssid">Network name (SSID)</label>
+      <input id="ssid" maxlength="32" required autocapitalize="none" autocorrect="off">
+      <label for="pass">Password</label>
+      <input id="pass" type="password" maxlength="64" autocapitalize="none" autocorrect="off">
+      <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="show" style="width:auto"> Show password</label>
+      <button type="submit" id="connectBtn">Connect</button>
+      <div class="msg" id="formMsg"></div>
+    </form>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let pending = null;   // SSID we're waiting for after pressing Connect
+
+function bars(rssi){ return rssi >= -55 ? '▂▄▆█' : rssi >= -67 ? '▂▄▆_' : rssi >= -78 ? '▂▄__' : '▂___'; }
+
+async function api(path, body){
+  const opt = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+async function scan(){
+  $('scanBtn').disabled = true;
+  $('list').innerHTML = '<li class="muted">Scanning…</li>';
+  try {
+    const r = await api('/api/scan');
+    const nets = r.networks || [];
+    $('list').innerHTML = '';
+    if (!nets.length) $('list').innerHTML = '<li class="muted">' + (r.error ? 'Scan failed, try again' : 'No networks found') + '</li>';
+    for (const n of nets) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.textContent = (n.secure ? '🔒 ' : '') + n.ssid;
+      const sig = document.createElement('span');
+      sig.className = 'bars'; sig.textContent = bars(n.rssi);
+      li.append(name, sig);
+      li.onclick = () => {
+        document.querySelectorAll('#list li').forEach(x => x.classList.remove('sel'));
+        li.classList.add('sel');
+        $('ssid').value = n.ssid; $('pass').value = '';
+        if (n.secure) $('pass').focus();
+      };
+      $('list').appendChild(li);
+    }
+  } catch (e) {
+    $('list').innerHTML = '<li class="muted">Scan failed, try again</li>';
+  }
+  $('scanBtn').disabled = false;
+}
+
+function showStatus(s){
+  const dot = $('dot'); dot.className = 'dot ' + s.state;
+  const d = $('stDetail');
+  let text, detail = '';
+  switch (s.state) {
+    case 'online':     text = 'Online via “' + s.ssid + '”'; detail = 'IP ' + s.ip + ' · signal ' + s.rssi + ' dBm'; break;
+    case 'connecting': text = 'Connecting to “' + s.ssid + '”…'; break;
+    case 'failed':     text = 'Could not connect to “' + s.ssid + '”'; detail = s.error; break;
+    default:           text = 'Not connected';
+  }
+  $('stText').textContent = text;
+  d.textContent = detail; d.classList.toggle('hidden', !detail);
+  $('forgetBtn').classList.toggle('hidden', !s.saved);
+
+  if (pending) {
+    if (s.state === 'online' && s.ssid === pending) {
+      pending = null;
+      $('formMsg').className = 'msg ok'; $('formMsg').textContent = 'Connected!';
+      $('doneMsg').classList.remove('hidden');
+      $('connectBtn').disabled = false;
+    } else if (s.state === 'failed' || (s.error && s.state !== 'connecting')) {
+      pending = null;
+      $('formMsg').className = 'msg err'; $('formMsg').textContent = s.error || 'Connection failed';
+      $('connectBtn').disabled = false;
+    }
+  }
+}
+
+async function poll(){
+  try { showStatus(await api('/api/status')); } catch (e) { /* adapter re-enumerating: keep trying */ }
+  setTimeout(poll, pending ? 1000 : 3000);
+}
+
+$('form').onsubmit = async ev => {
+  ev.preventDefault();
+  const ssid = $('ssid').value.trim(), password = $('pass').value;
+  if (!ssid) return;
+  $('connectBtn').disabled = true;
+  $('doneMsg').classList.add('hidden');
+  $('formMsg').className = 'msg'; $('formMsg').textContent = 'Connecting…';
+  try {
+    const r = await api('/api/connect', {ssid, password});
+    if (!r.ok) { $('formMsg').className = 'msg err'; $('formMsg').textContent = r.error; $('connectBtn').disabled = false; return; }
+    pending = ssid;
+  } catch (e) {
+    $('formMsg').className = 'msg err'; $('formMsg').textContent = 'Request failed';
+    $('connectBtn').disabled = false;
+  }
+};
+$('show').onchange = () => { $('pass').type = $('show').checked ? 'text' : 'password'; };
+$('scanBtn').onclick = scan;
+$('forgetBtn').onclick = async () => {
+  if (!confirm('Forget the saved Wi-Fi network?')) return;
+  await api('/api/forget', {});
+  $('doneMsg').classList.add('hidden');
+  scan();
+};
+
+poll();
+scan();
+</script>
+</body>
+</html>
