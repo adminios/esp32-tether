@@ -40,6 +40,8 @@ void status_led_set(led_mode_t mode)
     case LED_ERROR:      r = LED_LEVEL; break;
     default: break;
     }
-    led_strip_set_pixel(s_strip, 0, r, g, b);
+    // The S3-Zero's LED takes RGB byte order, while the driver sends GRB:
+    // pass red and green swapped so the colours come out right.
+    led_strip_set_pixel(s_strip, 0, g, r, b);
     led_strip_refresh(s_strip);
 }
